@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -383,12 +384,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			return
 		}
 		for _, group := range describeGroups.Groups {
-			offsetFetchRequest := sarama.OffsetFetchRequest{ConsumerGroup: group.GroupId, Version: 1}
-			for topic, partitions := range offset {
-				for partition := range partitions {
-					offsetFetchRequest.AddPartition(topic, partition)
-				}
-			}
+			offsetFetchRequest := sarama.OffsetFetchRequest{ConsumerGroup: group.GroupId, Version: 5}
 			ch <- prometheus.MustNewConstMetric(
 				consumergroupMembers, prometheus.GaugeValue, float64(len(group.Members)), group.GroupId,
 			)
@@ -622,5 +618,138 @@ func main() {
 	})
 
 	plog.Infoln("Listening on", *listenAddress)
+
+	//diy code don't merge to kafka_exporter
+	initWriteTask(*listenAddress + *metricsPath)
+
 	plog.Fatal(http.ListenAndServe(*listenAddress, nil))
+
+}
+
+//diy code don't merge to kafka_exporter
+func initWriteTask(url string)  {
+	url = "http://localhost"+url
+	c := time.Tick(30 * time.Second)
+	go func() {
+		for {
+			<-c
+			writeZabbix(url)
+		}
+	}()
+
+}
+
+func writeZabbix(url string){
+	resp, err := http.Get(url)
+	if err != nil {
+		plog.Errorf("get url" + url +  " error: %v", err)
+		return
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		plog.Errorf("get url " + url +  " error: %v" ,err)
+		return
+	}
+
+	var result = parse(string(body))
+	writeResult(result)
+}
+
+type zabbixResult struct {
+	LastUpdateTime int64  `json:"lastUpdateTime"`
+	DestList []dest  `json:"destList"`
+}
+
+type dest struct {
+	QueueName string  `json:"queueName"`
+	Count     int     `json:"count"`
+	ConsumerCount int  `json:"consumerCount"`
+}
+
+func parse(body string) zabbixResult {
+	//kafka_consumergroup_lag{consumergroup="newget",partition="1",topic="td"} 0
+	//kafka_consumergroup_members{consumergroup="newget"} 0
+	//queuename td-1-newget
+
+	plog.Debug("parse body is ",body)
+	groupMemberMap := make(map[string]string)
+	groupLags := make([][4]string,0)
+	for _,line := range strings.Split(body,"\n"){
+		if strings.HasPrefix(line,"kafka_consumergroup_lag{"){
+			reg,err := regexp.Compile(`kafka_consumergroup_lag{consumergroup="(.+)",partition="(\d+)",topic="(.+)"} (\d+)`)
+			if err == nil{
+				result := reg.FindStringSubmatch(line)
+				if len(result) > 0 {
+					plog.Debug("reg result is ",result)
+					group := result[1]
+					partition := result[2]
+					topic := result[3]
+					count := result[4]
+					groupLags = append(groupLags, [4]string{group, topic, partition, count})
+				}
+			}
+		}else if strings.HasPrefix(line,"kafka_consumergroup_members{"){
+			reg,err := regexp.Compile(`kafka_consumergroup_members{consumergroup="(.+)"} (\d+)`)
+			if err == nil{
+				result := reg.FindStringSubmatch(line)
+				if len(result) > 0 {
+					plog.Debug("reg result is ",result)
+					group := result[1]
+					count := result[2]
+					groupMemberMap[group] = count
+				}
+			}
+		}
+	}
+	result := zabbixResult{time.Now().Unix() * 1000 ,[]dest{}}
+	for _,groupLag := range groupLags{
+		plog.Debug("grouplag is  ",groupLag)
+		group := groupLag[0]
+		var consumerCount,count int
+		var err error
+		if _,ok := groupMemberMap[group]; ok{
+			if consumerCount,err = strconv.Atoi(groupMemberMap[group]);err != nil{
+				continue
+			}
+		}else {
+			consumerCount = 0
+		}
+		name := groupLag[1] +"-" +  groupLag[2] +"-" + group
+		if count,err = strconv.Atoi(groupLag[3]);err != nil{
+			continue
+		}
+		result.DestList = append(result.DestList,dest{name,count,consumerCount})
+	}
+	plog.Debug("final result is  ",result)
+	return result
+}
+
+func writeResult(result zabbixResult)  {
+	jsonStr,err := json.Marshal(result)
+	if err != nil{
+		plog.Errorf("json marshal error: %v " ,err)
+		return
+	}
+
+	dirPath := "/wls/applogs/destview"
+	_, err = os.Stat(dirPath)
+	if err != nil && !os.IsExist(err) {
+		err = os.MkdirAll(dirPath,os.ModePerm)
+		if err != nil{
+			plog.Errorf("create destView file error: %v " ,err)
+			return
+		}
+	}
+	filePath := dirPath + "/destView.json"
+	file,err := os.OpenFile(filePath,os.O_TRUNC | os.O_CREATE |os.O_RDWR , os.ModePerm)
+	if err != nil {
+		plog.Errorf("open file error: %v" ,err)
+		return
+	}
+	defer file.Close()
+	if _,err := file.Write(jsonStr);err != nil{
+		plog.Errorf("write file error: %v" ,err)
+	}
 }
