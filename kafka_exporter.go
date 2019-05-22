@@ -30,6 +30,10 @@ const (
 	clientID  = "kafka_exporter"
 )
 
+const (
+	tokenPWD = ""
+)
+
 var (
 	clusterBrokers                     *prometheus.Desc
 	topicPartitions                    *prometheus.Desc
@@ -616,7 +620,7 @@ func main() {
 	        </body>
 	        </html>`))
 	})
-
+	initAgentApi(opts)
 	plog.Infoln("Listening on", *listenAddress)
 
 	//diy code don't merge to kafka_exporter
@@ -627,6 +631,256 @@ func main() {
 }
 
 //diy code don't merge to kafka_exporter
+func initKafkaAdmin(opts kafkaOpts) (sarama.ClusterAdmin,error) {
+	config := sarama.NewConfig()
+	config.ClientID = clientID
+	kafkaVersion, err := sarama.ParseKafkaVersion(opts.kafkaVersion)
+	if err != nil {
+		return nil,err
+	}
+	config.Version = kafkaVersion
+
+	if opts.useSASL {
+		config.Net.SASL.Enable = true
+		config.Net.SASL.Handshake = opts.useSASLHandshake
+
+		if opts.saslUsername != "" {
+			config.Net.SASL.User = opts.saslUsername
+		}
+
+		if opts.saslPassword != "" {
+			config.Net.SASL.Password = opts.saslPassword
+		}
+	}
+
+	if opts.useTLS {
+		config.Net.TLS.Enable = true
+
+		config.Net.TLS.Config = &tls.Config{
+			RootCAs:            x509.NewCertPool(),
+			InsecureSkipVerify: opts.tlsInsecureSkipTLSVerify,
+		}
+
+		if opts.tlsCAFile != "" {
+			if ca, err := ioutil.ReadFile(opts.tlsCAFile); err == nil {
+				config.Net.TLS.Config.RootCAs.AppendCertsFromPEM(ca)
+			} else {
+				plog.Fatalln(err)
+			}
+		}
+
+		canReadCertAndKey, err := CanReadCertAndKey(opts.tlsCertFile, opts.tlsKeyFile)
+		if err != nil {
+			plog.Fatalln(err)
+		}
+		if canReadCertAndKey {
+			cert, err := tls.LoadX509KeyPair(opts.tlsCertFile, opts.tlsKeyFile)
+			if err == nil {
+				config.Net.TLS.Config.Certificates = []tls.Certificate{cert}
+			} else {
+				plog.Fatalln(err)
+			}
+		}
+	}
+
+	interval, err := time.ParseDuration(opts.metadataRefreshInterval)
+	if err != nil {
+		plog.Errorln("Cannot parse metadata refresh interval")
+		return nil,err
+	}
+
+	config.Metadata.RefreshFrequency = interval
+
+	client, err := sarama.NewClusterAdmin(opts.uri, config)
+	if err != nil {
+		plog.Errorln("Error Init Kafka admin Client")
+		return nil,err
+	}
+	plog.Infoln("Done Init admin Clients")
+	return client,nil
+}
+
+func initAgentApi(opts kafkaOpts) {
+	http.HandleFunc("/topic/create", func(w http.ResponseWriter, r *http.Request) {
+		if prepareRequest(w, r) {
+			adminClient,err := initKafkaAdmin(opts)
+			if err != nil {
+				plog.Errorf("Error for init admin client %v", err.Error())
+				w.WriteHeader(404)
+				w.Write([]byte("Error for init admin client " + err.Error()))
+			}
+			defer adminClient.Close()
+			postForm := r.PostForm
+			if len(postForm["name"]) == 0 {
+				w.WriteHeader(404)
+				w.Write([]byte("topic name not passed"))
+			}else {
+				name := postForm["name"][0]
+				numPartition := 5
+				replicationFactor := 3
+				if len(postForm["numPartition"]) != 0 {
+					num,err := strconv.Atoi(postForm["numPartition"][0])
+					if err == nil {
+						numPartition = num
+					}
+				}
+				if len(postForm["replicationFactor"]) != 0 {
+					num,err := strconv.Atoi(postForm["replicationFactor"][0])
+					if err == nil {
+						replicationFactor = num
+					}
+				}
+				topicDetail := &sarama.TopicDetail{
+					NumPartitions: int32(numPartition),
+					ReplicationFactor: int16(replicationFactor),
+				}
+				err := adminClient.CreateTopic(name,topicDetail,false)
+				if err != nil {
+					plog.Errorf("Error for  create topic %v", err.Error())
+					w.WriteHeader(404)
+					w.Write([]byte("create topic error " + err.Error()))
+				}else {
+					w.WriteHeader(200)
+					w.Write([]byte("ok"))
+				}
+			}
+		}
+	})
+	http.HandleFunc("/topic/delete", func(w http.ResponseWriter, r *http.Request) {
+		if prepareRequest(w, r) {
+			adminClient,err := initKafkaAdmin(opts)
+			if err != nil {
+				plog.Errorf("Error for init admin client %v", err.Error())
+				w.WriteHeader(404)
+				w.Write([]byte("Error for init admin client " + err.Error()))
+			}
+			defer adminClient.Close()
+			postForm := r.PostForm
+			if len(postForm["name"]) == 0 {
+				w.WriteHeader(404)
+				w.Write([]byte("topic name not passed"))
+			}else {
+				name := postForm["name"][0]
+				err := adminClient.DeleteTopic(name)
+				if err != nil {
+					plog.Errorf("Error for  delete topic %v", err.Error())
+					w.WriteHeader(404)
+					w.Write([]byte("delete topic error " + err.Error()))
+				}else {
+					w.WriteHeader(200)
+					w.Write([]byte("ok"))
+				}
+			}
+		}
+	})
+	http.HandleFunc("/topic/records/delete", func(w http.ResponseWriter, r *http.Request) {
+		if prepareRequest(w, r) {
+			adminClient,err := initKafkaAdmin(opts)
+			if err != nil {
+				plog.Errorf("Error for init admin client %v", err.Error())
+				w.WriteHeader(404)
+				w.Write([]byte("Error for init admin client " + err.Error()))
+			}
+			defer adminClient.Close()
+			postForm := r.PostForm
+			if len(postForm["name"]) == 0 {
+				w.WriteHeader(404)
+				w.Write([]byte("topic name not passed"))
+			}else {
+				name := postForm["name"][0]
+				if len(postForm["partitionOffsets"]) == 0 {
+					w.WriteHeader(404)
+					w.Write([]byte("partitionOffsets not passed"))
+					return
+				}
+				partitionOffsetsStr := postForm["partitionOffsets"][0]
+				partitionOffsets :=  make(map[int32]int64)
+				for _,partitionOffsetStr := range strings.Split(partitionOffsetsStr,","){
+					partitionOffsetArray := strings.Split(partitionOffsetStr,":")
+					partition,err := strconv.Atoi(partitionOffsetArray[0])
+					if err != nil {
+						w.WriteHeader(404)
+						w.Write([]byte("partitionOffset parse failed " + partitionOffsetsStr))
+						return
+					}
+					offset,err := strconv.Atoi(partitionOffsetArray[1])
+					if err != nil {
+						w.WriteHeader(404)
+						w.Write([]byte("partitionOffset parse failed " + partitionOffsetsStr))
+						return
+					}
+					partitionOffsets[int32(partition)] = int64(offset)
+				}
+				if len(partitionOffsets) == 0 {
+					w.WriteHeader(404)
+					w.Write([]byte("partitionOffset parse failed " + partitionOffsetsStr))
+					return
+				}							
+	                        plog.Debug("param is %v" ,partitionOffsets )
+				err := adminClient.DeleteRecords(name,partitionOffsets)
+				if err != nil {
+					plog.Errorf("Error for  delete record %v", err.Error())
+					w.WriteHeader(404)
+					w.Write([]byte("delete record error " + err.Error()))
+				}else {
+					w.WriteHeader(200)
+					w.Write([]byte("ok"))
+				}
+			}
+		}
+	})
+	http.HandleFunc("/topic/createpartition", func(w http.ResponseWriter, r *http.Request) {
+		if prepareRequest(w, r) {
+			adminClient,err := initKafkaAdmin(opts)
+			if err != nil {
+				plog.Errorf("Error for init admin client %v", err.Error())
+				w.WriteHeader(404)
+				w.Write([]byte("Error for init admin client " + err.Error()))
+			}
+			defer adminClient.Close()
+			postForm := r.PostForm
+			if len(postForm["name"]) == 0 {
+				w.WriteHeader(404)
+				w.Write([]byte("topic name not passed"))
+			}else {
+				name := postForm["name"][0]
+				if len(postForm["count"]) == 0 {
+					w.WriteHeader(404)
+					w.Write([]byte("topic name not passed"))
+					return
+				}
+				count,err := strconv.Atoi(postForm["count"][0])
+				if err != nil {
+					plog.Errorf("Error for  count atoi %v", err.Error())
+					w.WriteHeader(404)
+					w.Write([]byte("count atoi error " + err.Error()))
+					return
+				}
+				err = adminClient.CreatePartitions(name, int32(count), nil, false)
+				if err != nil {
+					plog.Errorf("Error for  create partition %v", err.Error())
+					w.WriteHeader(404)
+					w.Write([]byte("create partition error" + err.Error()))
+				}else {
+					w.WriteHeader(200)
+					w.Write([]byte("ok"))
+				}
+			}
+		}
+	})
+}
+
+func prepareRequest(w http.ResponseWriter, r *http.Request) bool {
+	r.ParseForm()
+	token := r.PostForm.Get("token")
+	if token != tokenPWD {
+		w.WriteHeader(404)
+		w.Write([]byte(`token failed`))
+		return false
+	}
+	return true
+}
+
 func initWriteTask(url string)  {
 	url = "http://localhost"+url
 	c := time.Tick(30 * time.Second)
