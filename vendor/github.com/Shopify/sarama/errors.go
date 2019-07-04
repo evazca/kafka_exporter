@@ -327,3 +327,15 @@ func (err KError) Error() string {
 
 	return fmt.Sprintf("Unknown error, how did this happen? Error code = %d", err)
 }
+
+type MultiError struct {
+	Errors *[]error
+}
+
+type ErrDeleteRecords struct {
+	MultiError
+}
+
+func (err ErrDeleteRecords) Error() string {
+	return "kafka server: failed to delete records"
+}

@@ -411,7 +411,7 @@ func (ca *clusterAdmin) DeleteRecords(topic string, partitionOffsets map[int32]i
 		}
 	}
 	if len(errs) > 0 {
-		return errors.New("fail to delete records")
+		return &ErrDeleteRecords{MultiError{&errs}}
 	}
 	//todo since we are dealing with couple of partitions it would be good if we return slice of errors
 	//for each partition instead of one error

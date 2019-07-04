@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -302,13 +303,17 @@ func TestClusterAdminCreatePartitionsWithDiffVersion(t *testing.T) {
 }
 
 func TestClusterAdminDeleteRecords(t *testing.T) {
+	topic_name := "my_topic"
 	seedBroker := NewMockBroker(t, 1)
 	defer seedBroker.Close()
 
 	seedBroker.SetHandlerByMap(map[string]MockResponse{
 		"MetadataRequest": NewMockMetadataResponse(t).
 			SetController(seedBroker.BrokerID()).
-			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()),
+			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()).
+		    SetLeader(topic_name, 1, 1).
+			SetLeader(topic_name, 2, 1).
+			SetLeader(topic_name, 3, 1),
 		"DeleteRecordsRequest": NewMockDeleteRecordsResponse(t),
 	})
 
@@ -316,6 +321,7 @@ func TestClusterAdminDeleteRecords(t *testing.T) {
 	config.Version = V1_0_0_0
 	admin, err := NewClusterAdmin([]string{seedBroker.Addr()}, config)
 	if err != nil {
+		fmt.Println(err)
 		t.Fatal(err)
 	}
 
@@ -324,7 +330,7 @@ func TestClusterAdminDeleteRecords(t *testing.T) {
 	partitionOffset[2] = 1000
 	partitionOffset[3] = 1000
 
-	err = admin.DeleteRecords("my_topic", partitionOffset)
+	err = admin.DeleteRecords(topic_name, partitionOffset)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,13 +342,17 @@ func TestClusterAdminDeleteRecords(t *testing.T) {
 }
 
 func TestClusterAdminDeleteRecordsWithDiffVersion(t *testing.T) {
+	topic_name := "my_topic"
 	seedBroker := NewMockBroker(t, 1)
 	defer seedBroker.Close()
 
 	seedBroker.SetHandlerByMap(map[string]MockResponse{
 		"MetadataRequest": NewMockMetadataResponse(t).
 			SetController(seedBroker.BrokerID()).
-			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()),
+			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()).
+			SetLeader(topic_name, 1, 1).
+			SetLeader(topic_name, 2, 1).
+			SetLeader(topic_name, 3, 1),
 		"DeleteRecordsRequest": NewMockDeleteRecordsResponse(t),
 	})
 
@@ -358,9 +368,17 @@ func TestClusterAdminDeleteRecordsWithDiffVersion(t *testing.T) {
 	partitionOffset[2] = 1000
 	partitionOffset[3] = 1000
 
-	err = admin.DeleteRecords("my_topic", partitionOffset)
-	if err != ErrUnsupportedVersion {
+	err = admin.DeleteRecords(topic_name, partitionOffset)
+
+	deleteRecordsError, ok := err.(ErrDeleteRecords)
+
+	if !ok{
 		t.Fatal(err)
+	}
+	for _, err := range *deleteRecordsError.Errors{
+		if err != ErrUnsupportedVersion {
+			t.Fatal(err)
+		}
 	}
 
 	err = admin.Close()
