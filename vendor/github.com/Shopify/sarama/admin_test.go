@@ -2,7 +2,6 @@ package sarama
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 )
 
@@ -321,7 +320,6 @@ func TestClusterAdminDeleteRecords(t *testing.T) {
 	config.Version = V1_0_0_0
 	admin, err := NewClusterAdmin([]string{seedBroker.Addr()}, config)
 	if err != nil {
-		fmt.Println(err)
 		t.Fatal(err)
 	}
 
