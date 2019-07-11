@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/Shopify/sarama"
-	kazoo "github.com/krallistic/kazoo-go"
+	loggo "github.com/jeanphorn/log4go"
+	"github.com/krallistic/kazoo-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	plog "github.com/prometheus/common/log"
 	"github.com/prometheus/common/version"
 	"github.com/rcrowley/go-metrics"
 	"gopkg.in/alecthomas/kingpin.v2"
@@ -50,6 +50,7 @@ var (
 
 var (
 	token      =  ""
+	commonLogger        *loggo.Filter
 )
 
 // Exporter collects Kafka stats from the given server and exports them using
@@ -153,20 +154,20 @@ func NewExporter(opts kafkaOpts, topicFilter string, groupFilter string) (*Expor
 			if ca, err := ioutil.ReadFile(opts.tlsCAFile); err == nil {
 				config.Net.TLS.Config.RootCAs.AppendCertsFromPEM(ca)
 			} else {
-				plog.Fatalln(err)
+				commonLogger.Critical(err)
 			}
 		}
 
 		canReadCertAndKey, err := CanReadCertAndKey(opts.tlsCertFile, opts.tlsKeyFile)
 		if err != nil {
-			plog.Fatalln(err)
+			commonLogger.Critical(err)
 		}
 		if canReadCertAndKey {
 			cert, err := tls.LoadX509KeyPair(opts.tlsCertFile, opts.tlsKeyFile)
 			if err == nil {
 				config.Net.TLS.Config.Certificates = []tls.Certificate{cert}
 			} else {
-				plog.Fatalln(err)
+				commonLogger.Critical(err)
 			}
 		}
 	}
@@ -177,7 +178,7 @@ func NewExporter(opts kafkaOpts, topicFilter string, groupFilter string) (*Expor
 
 	interval, err := time.ParseDuration(opts.metadataRefreshInterval)
 	if err != nil {
-		plog.Errorln("Cannot parse metadata refresh interval")
+		commonLogger.Error("Cannot parse metadata refresh interval")
 		panic(err)
 	}
 
@@ -186,10 +187,10 @@ func NewExporter(opts kafkaOpts, topicFilter string, groupFilter string) (*Expor
 	client, err := sarama.NewClient(opts.uri, config)
 
 	if err != nil {
-		plog.Errorln("Error Init Kafka Client")
+		commonLogger.Error("Error Init Kafka Client")
 		panic(err)
 	}
-	plog.Infoln("Done Init Clients")
+	commonLogger.Info("Done Init Clients")
 
 	// Init our exporter.
 	return &Exporter{
@@ -235,10 +236,10 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	now := time.Now()
 
 	if now.After(e.nextMetadataRefresh) {
-		plog.Info("Refreshing client metadata")
+		commonLogger.Info("Refreshing client metadata")
 
 		if err := e.client.RefreshMetadata(); err != nil {
-			plog.Errorf("Cannot refresh topics, using cached data: %v", err)
+			commonLogger.Error("Cannot refresh topics, using cached data: %v", err)
 		}
 
 		e.nextMetadataRefresh = now.Add(e.metadataRefreshInterval)
@@ -246,7 +247,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	topics, err := e.client.Topics()
 	if err != nil {
-		plog.Errorf("Cannot get topics: %v", err)
+		commonLogger.Error("Cannot get topics: %v", err)
 		return
 	}
 
@@ -255,7 +256,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		if e.topicFilter.MatchString(topic) {
 			partitions, err := e.client.Partitions(topic)
 			if err != nil {
-				plog.Errorf("Cannot get partitions of topic %s: %v", topic, err)
+				commonLogger.Error("Cannot get partitions of topic %s: %v", topic, err)
 				return
 			}
 			ch <- prometheus.MustNewConstMetric(
@@ -267,7 +268,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			for _, partition := range partitions {
 				broker, err := e.client.Leader(topic, partition)
 				if err != nil {
-					plog.Errorf("Cannot get leader of topic %s partition %d: %v", topic, partition, err)
+					commonLogger.Error("Cannot get leader of topic %s partition %d: %v", topic, partition, err)
 				} else {
 					ch <- prometheus.MustNewConstMetric(
 						topicPartitionLeader, prometheus.GaugeValue, float64(broker.ID()), topic, strconv.FormatInt(int64(partition), 10),
@@ -276,7 +277,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 				currentOffset, err := e.client.GetOffset(topic, partition, sarama.OffsetNewest)
 				if err != nil {
-					plog.Errorf("Cannot get current offset of topic %s partition %d: %v", topic, partition, err)
+					commonLogger.Error("Cannot get current offset of topic %s partition %d: %v", topic, partition, err)
 				} else {
 					e.mu.Lock()
 					offset[topic][partition] = currentOffset
@@ -288,7 +289,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 				oldestOffset, err := e.client.GetOffset(topic, partition, sarama.OffsetOldest)
 				if err != nil {
-					plog.Errorf("Cannot get oldest offset of topic %s partition %d: %v", topic, partition, err)
+					commonLogger.Error("Cannot get oldest offset of topic %s partition %d: %v", topic, partition, err)
 				} else {
 					ch <- prometheus.MustNewConstMetric(
 						topicOldestOffset, prometheus.GaugeValue, float64(oldestOffset), topic, strconv.FormatInt(int64(partition), 10),
@@ -297,7 +298,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 				replicas, err := e.client.Replicas(topic, partition)
 				if err != nil {
-					plog.Errorf("Cannot get replicas of topic %s partition %d: %v", topic, partition, err)
+					commonLogger.Error("Cannot get replicas of topic %s partition %d: %v", topic, partition, err)
 				} else {
 					ch <- prometheus.MustNewConstMetric(
 						topicPartitionReplicas, prometheus.GaugeValue, float64(len(replicas)), topic, strconv.FormatInt(int64(partition), 10),
@@ -306,7 +307,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 				inSyncReplicas, err := e.client.InSyncReplicas(topic, partition)
 				if err != nil {
-					plog.Errorf("Cannot get in-sync replicas of topic %s partition %d: %v", topic, partition, err)
+					commonLogger.Error("Cannot get in-sync replicas of topic %s partition %d: %v", topic, partition, err)
 				} else {
 					ch <- prometheus.MustNewConstMetric(
 						topicPartitionInSyncReplicas, prometheus.GaugeValue, float64(len(inSyncReplicas)), topic, strconv.FormatInt(int64(partition), 10),
@@ -337,7 +338,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 					ConsumerGroups, err := e.zookeeperClient.Consumergroups()
 
 					if err != nil {
-						plog.Errorf("Cannot get consumer group %v", err)
+						commonLogger.Error("Cannot get consumer group %v", err)
 					}
 
 					for _, group := range ConsumerGroups {
@@ -365,14 +366,14 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	getConsumerGroupMetrics := func(broker *sarama.Broker) {
 		defer wg.Done()
 		if err := broker.Open(e.client.Config()); err != nil && err != sarama.ErrAlreadyConnected {
-			plog.Errorf("Cannot connect to broker %d: %v", broker.ID(), err)
+			commonLogger.Error("Cannot connect to broker %d: %v", broker.ID(), err)
 			return
 		}
 		defer broker.Close()
 
 		groups, err := broker.ListGroups(&sarama.ListGroupsRequest{})
 		if err != nil {
-			plog.Errorf("Cannot get consumer group: %v", err)
+			commonLogger.Error("Cannot get consumer group: %v", err)
 			return
 		}
 		groupIds := make([]string, 0)
@@ -384,7 +385,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 		describeGroups, err := broker.DescribeGroups(&sarama.DescribeGroupsRequest{Groups: groupIds})
 		if err != nil {
-			plog.Errorf("Cannot get describe groups: %v", err)
+			commonLogger.Error("Cannot get describe groups: %v", err)
 			return
 		}
 		for _, group := range describeGroups.Groups {
@@ -393,7 +394,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				consumergroupMembers, prometheus.GaugeValue, float64(len(group.Members)), group.GroupId,
 			)
 			if offsetFetchResponse, err := broker.FetchOffset(&offsetFetchRequest); err != nil {
-				plog.Errorf("Cannot get offset of group %s: %v", group.GroupId, err)
+				commonLogger.Error("Cannot get offset of group %s: %v", group.GroupId, err)
 			} else {
 				for topic, partitions := range offsetFetchResponse.Blocks {
 					// If the topic is not consumed by that consumer group, skip it
@@ -411,7 +412,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 						for partition, offsetFetchResponseBlock := range partitions {
 							err := offsetFetchResponseBlock.Err
 							if err != sarama.ErrNoError {
-								plog.Errorf("Error for  partition %d :%v", partition, err.Error())
+								commonLogger.Error("Error for  partition %d :%v", partition, err.Error())
 								continue
 							}
 							currentOffset := offsetFetchResponseBlock.Offset
@@ -434,7 +435,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 									consumergroupLag, prometheus.GaugeValue, float64(lag), group.GroupId, topic, strconv.FormatInt(int64(partition), 10),
 								)
 							} else {
-								plog.Errorf("No offset of topic %s partition %d, cannot get consumer group lag", topic, partition)
+								commonLogger.Error("No offset of topic %s partition %d, cannot get consumer group lag", topic, partition)
 							}
 							e.mu.Unlock()
 						}
@@ -457,7 +458,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		}
 		wg.Wait()
 	} else {
-		plog.Errorln("No valid broker, cannot get consumer group metrics")
+		commonLogger.Error("No valid broker, cannot get consumer group metrics")
 	}
 }
 
@@ -467,6 +468,8 @@ func init() {
 }
 
 func main() {
+	loggo.LoadConfiguration("./log.json")
+	commonLogger = loggo.LOGGER("common")
 	var (
 		listenAddress = kingpin.Flag("web.listen-address", "Address to listen on for web interface and telemetry.").Default(":9308").String()
 		metricsPath   = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").String()
@@ -491,13 +494,12 @@ func main() {
 	kingpin.Flag("zookeeper.server", "Address (hosts) of zookeeper server.").Default("localhost:2181").StringsVar(&opts.uriZookeeper)
 	kingpin.Flag("kafka.labels", "Kafka cluster name").Default("").StringVar(&opts.labels)
 	kingpin.Flag("refresh.metadata", "Metadata refresh interval").Default("30s").StringVar(&opts.metadataRefreshInterval)
-	plog.AddFlags(kingpin.CommandLine)
 	kingpin.Version(version.Print("kafka_exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
-	plog.Infoln("Starting kafka_exporter", version.Info())
-	plog.Infoln("Build context", version.BuildContext())
+	commonLogger.Info("Starting kafka_exporter", version.Info())
+	commonLogger.Info("Build context", version.BuildContext())
 	opts.uri = strings.Split(*uris, ",")
 	labels := make(map[string]string)
 
@@ -604,7 +606,7 @@ func main() {
 
 	exporter, err := NewExporter(opts, *topicFilter, *groupFilter)
 	if err != nil {
-		plog.Fatalln(err)
+		commonLogger.Critical(err)
 	}
 	defer exporter.client.Close()
 	prometheus.MustRegister(exporter)
@@ -620,12 +622,12 @@ func main() {
 	        </html>`))
 	})
 	initAgentApi(opts)
-	plog.Infoln("Listening on", *listenAddress)
+	commonLogger.Info("Listening on", *listenAddress)
 
 	//diy code don't merge to kafka_exporter
 	initWriteTask(*listenAddress + *metricsPath)
 
-	plog.Fatal(http.ListenAndServe(*listenAddress, nil))
+	commonLogger.Critical(http.ListenAndServe(*listenAddress, nil))
 
 }
 
@@ -664,27 +666,27 @@ func initKafkaAdmin(opts kafkaOpts) (sarama.ClusterAdmin,error) {
 			if ca, err := ioutil.ReadFile(opts.tlsCAFile); err == nil {
 				config.Net.TLS.Config.RootCAs.AppendCertsFromPEM(ca)
 			} else {
-				plog.Fatalln(err)
+				commonLogger.Critical(err)
 			}
 		}
 
 		canReadCertAndKey, err := CanReadCertAndKey(opts.tlsCertFile, opts.tlsKeyFile)
 		if err != nil {
-			plog.Fatalln(err)
+			commonLogger.Critical(err)
 		}
 		if canReadCertAndKey {
 			cert, err := tls.LoadX509KeyPair(opts.tlsCertFile, opts.tlsKeyFile)
 			if err == nil {
 				config.Net.TLS.Config.Certificates = []tls.Certificate{cert}
 			} else {
-				plog.Fatalln(err)
+				commonLogger.Critical(err)
 			}
 		}
 	}
 
 	interval, err := time.ParseDuration(opts.metadataRefreshInterval)
 	if err != nil {
-		plog.Errorln("Cannot parse metadata refresh interval")
+		commonLogger.Error("Cannot parse metadata refresh interval")
 		return nil,err
 	}
 
@@ -692,10 +694,10 @@ func initKafkaAdmin(opts kafkaOpts) (sarama.ClusterAdmin,error) {
 
 	client, err := sarama.NewClusterAdmin(opts.uri, config)
 	if err != nil {
-		plog.Errorln("Error Init Kafka admin Client")
+		commonLogger.Error("Error Init Kafka admin Client")
 		return nil,err
 	}
-	plog.Infoln("Done Init admin Clients")
+	commonLogger.Info("Done Init admin Clients")
 	return client,nil
 }
 
@@ -704,7 +706,7 @@ func initAgentApi(opts kafkaOpts) {
 		if prepareRequest(w, r) {
 			adminClient,err := initKafkaAdmin(opts)
 			if err != nil {
-				plog.Errorf("Error for init admin client %v", err.Error())
+				commonLogger.Error("Error for init admin client %v", err.Error())
 				w.WriteHeader(404)
 				w.Write([]byte("Error for init admin client " + err.Error()))
 			}
@@ -735,7 +737,7 @@ func initAgentApi(opts kafkaOpts) {
 				}
 				err := adminClient.CreateTopic(name,topicDetail,false)
 				if err != nil {
-					plog.Errorf("Error for  create topic %v", err.Error())
+					commonLogger.Error("Error for  create topic %v", err.Error())
 					w.WriteHeader(404)
 					w.Write([]byte("create topic error " + err.Error()))
 				}else {
@@ -749,7 +751,7 @@ func initAgentApi(opts kafkaOpts) {
 		if prepareRequest(w, r) {
 			adminClient,err := initKafkaAdmin(opts)
 			if err != nil {
-				plog.Errorf("Error for init admin client %v", err.Error())
+				commonLogger.Error("Error for init admin client %v", err.Error())
 				w.WriteHeader(404)
 				w.Write([]byte("Error for init admin client " + err.Error()))
 			}
@@ -762,7 +764,7 @@ func initAgentApi(opts kafkaOpts) {
 				name := postForm["name"][0]
 				err := adminClient.DeleteTopic(name)
 				if err != nil {
-					plog.Errorf("Error for  delete topic %v", err.Error())
+					commonLogger.Error("Error for  delete topic %v", err.Error())
 					w.WriteHeader(404)
 					w.Write([]byte("delete topic error " + err.Error()))
 				}else {
@@ -776,7 +778,7 @@ func initAgentApi(opts kafkaOpts) {
 		if prepareRequest(w, r) {
 			adminClient,err := initKafkaAdmin(opts)
 			if err != nil {
-				plog.Errorf("Error for init admin client %v", err.Error())
+				commonLogger.Error("Error for init admin client %v", err.Error())
 				w.WriteHeader(404)
 				w.Write([]byte("Error for init admin client " + err.Error()))
 			}
@@ -815,10 +817,10 @@ func initAgentApi(opts kafkaOpts) {
 					w.Write([]byte("partitionOffset parse failed " + partitionOffsetsStr))
 					return
 				}							
-				plog.Debug("param is %v" ,partitionOffsets )
+				commonLogger.Debug("param is %v" ,partitionOffsets )
 				err := adminClient.DeleteRecords(name,partitionOffsets)
 				if err != nil {
-					plog.Errorf("Error for  delete record %v", err.Error())
+					commonLogger.Error("Error for  delete record %v", err.Error())
 					w.WriteHeader(404)
 					w.Write([]byte("delete record error " + err.Error()))
 				}else {
@@ -832,7 +834,7 @@ func initAgentApi(opts kafkaOpts) {
 		if prepareRequest(w, r) {
 			adminClient,err := initKafkaAdmin(opts)
 			if err != nil {
-				plog.Errorf("Error for init admin client %v", err.Error())
+				commonLogger.Error("Error for init admin client %v", err.Error())
 				w.WriteHeader(404)
 				w.Write([]byte("Error for init admin client " + err.Error()))
 			}
@@ -850,14 +852,14 @@ func initAgentApi(opts kafkaOpts) {
 				}
 				count,err := strconv.Atoi(postForm["count"][0])
 				if err != nil {
-					plog.Errorf("Error for  count atoi %v", err.Error())
+					commonLogger.Error("Error for  count atoi %v", err.Error())
 					w.WriteHeader(404)
 					w.Write([]byte("count atoi error " + err.Error()))
 					return
 				}
 				err = adminClient.CreatePartitions(name, int32(count), nil, false)
 				if err != nil {
-					plog.Errorf("Error for  create partition %v", err.Error())
+					commonLogger.Error("Error for  create partition %v", err.Error())
 					w.WriteHeader(404)
 					w.Write([]byte("create partition error" + err.Error()))
 				}else {
@@ -895,14 +897,14 @@ func initWriteTask(url string)  {
 func writeZabbix(url string){
 	resp, err := http.Get(url)
 	if err != nil {
-		plog.Errorf("get url" + url +  " error: %v", err)
+		commonLogger.Error("get url" + url +  " error: %v", err)
 		return
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		plog.Errorf("get url " + url +  " error: %v" ,err)
+		commonLogger.Error("get url " + url +  " error: %v" ,err)
 		return
 	}
 
@@ -926,7 +928,7 @@ func parse(body string) zabbixResult {
 	//kafka_consumergroup_members{consumergroup="newget"} 0
 	//queuename td-1-newget
 
-	plog.Debug("parse body is ",body)
+	commonLogger.Debug("parse body is ",body)
 	groupMemberMap := make(map[string]string)
 	groupLags := make([][4]string,0)
 	for _,line := range strings.Split(body,"\n"){
@@ -935,7 +937,7 @@ func parse(body string) zabbixResult {
 			if err == nil{
 				result := reg.FindStringSubmatch(line)
 				if len(result) > 0 {
-					plog.Debug("reg result is ",result)
+					commonLogger.Debug("reg result is ",result)
 					group := result[1]
 					partition := result[2]
 					topic := result[3]
@@ -948,7 +950,7 @@ func parse(body string) zabbixResult {
 			if err == nil{
 				result := reg.FindStringSubmatch(line)
 				if len(result) > 0 {
-					plog.Debug("reg result is ",result)
+					commonLogger.Debug("reg result is ",result)
 					group := result[1]
 					count := result[2]
 					groupMemberMap[group] = count
@@ -958,7 +960,7 @@ func parse(body string) zabbixResult {
 	}
 	result := zabbixResult{time.Now().Unix() * 1000 ,[]dest{}}
 	for _,groupLag := range groupLags{
-		plog.Debug("grouplag is  ",groupLag)
+		commonLogger.Debug("grouplag is  ",groupLag)
 		group := groupLag[0]
 		var consumerCount,count int
 		var err error
@@ -975,14 +977,14 @@ func parse(body string) zabbixResult {
 		}
 		result.DestList = append(result.DestList,dest{name,count,consumerCount})
 	}
-	plog.Debug("final result is  ",result)
+	commonLogger.Debug("final result is  ",result)
 	return result
 }
 
 func writeResult(result zabbixResult)  {
 	jsonStr,err := json.Marshal(result)
 	if err != nil{
-		plog.Errorf("json marshal error: %v " ,err)
+		commonLogger.Error("json marshal error: %v " ,err)
 		return
 	}
 
@@ -991,18 +993,18 @@ func writeResult(result zabbixResult)  {
 	if err != nil && !os.IsExist(err) {
 		err = os.MkdirAll(dirPath,os.ModePerm)
 		if err != nil{
-			plog.Errorf("create destView file error: %v " ,err)
+			commonLogger.Error("create destView file error: %v " ,err)
 			return
 		}
 	}
 	filePath := dirPath + "/destView.json"
 	file,err := os.OpenFile(filePath,os.O_TRUNC | os.O_CREATE |os.O_RDWR , os.ModePerm)
 	if err != nil {
-		plog.Errorf("open file error: %v" ,err)
+		commonLogger.Error("open file error: %v" ,err)
 		return
 	}
 	defer file.Close()
 	if _,err := file.Write(jsonStr);err != nil{
-		plog.Errorf("write file error: %v" ,err)
+		commonLogger.Error("write file error: %v" ,err)
 	}
 }

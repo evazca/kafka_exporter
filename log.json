@@ -1,0 +1,15 @@
+{
+  "files": [{
+    "enable": true,
+    "level": "INFO",
+    "filename":"/wls/applogs/rtlog/kafka-agent/kafka-agent.log",
+    "category": "common",
+    "pattern": "[%D %T] [%C] [%L] (%S) %M",
+    "rotate": true,
+    "maxsize": "500M",
+    "maxlines": "10K",
+    "daily": true,
+    "sanitize": true,
+    "maxbackup ": 30
+  }]
+}
