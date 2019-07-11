@@ -30,11 +30,6 @@ const (
 	clientID  = "kafka_exporter"
 )
 
-const (
-	tokenT = "2c91ccb9ea97f9c7473a2b17ca69a4ca"
-	tokenP = "32746f7a7be67f745a4101e22022d7f3"
-)
-
 var (
 	clusterBrokers                     *prometheus.Desc
 	topicPartitions                    *prometheus.Desc
@@ -54,8 +49,7 @@ var (
 )
 
 var (
-	env                                *string
-	token                              string
+	token      =  ""
 )
 
 // Exporter collects Kafka stats from the given server and exports them using
@@ -497,7 +491,6 @@ func main() {
 	kingpin.Flag("zookeeper.server", "Address (hosts) of zookeeper server.").Default("localhost:2181").StringsVar(&opts.uriZookeeper)
 	kingpin.Flag("kafka.labels", "Kafka cluster name").Default("").StringVar(&opts.labels)
 	kingpin.Flag("refresh.metadata", "Metadata refresh interval").Default("30s").StringVar(&opts.metadataRefreshInterval)
-	kingpin.Flag("env", "environment").Default("prod").StringVar(env)
 	plog.AddFlags(kingpin.CommandLine)
 	kingpin.Version(version.Print("kafka_exporter"))
 	kingpin.HelpFlag.Short('h')
@@ -507,11 +500,7 @@ func main() {
 	plog.Infoln("Build context", version.BuildContext())
 	opts.uri = strings.Split(*uris, ",")
 	labels := make(map[string]string)
-	if *env != "dev" {
-		token = tokenP
-	}else {
-		token = tokenT
-	}
+
 	// Protect against empty labels
 	if opts.labels != "" {
 		for _, label := range strings.Split(opts.labels, ",") {
@@ -885,7 +874,7 @@ func prepareRequest(w http.ResponseWriter, r *http.Request) bool {
 	tokenParam := r.Form.Get("token")
 	if token != tokenParam {
 		w.WriteHeader(404)
-		w.Write([]byte(`token not verfied, be awared that your env is ` + *env ))
+		w.Write([]byte(`token not verfied` ))
 		return false
 	}
 	return true
